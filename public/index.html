@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Camera Share</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #111;
+      color: white;
+      text-align: center;
+      padding: 20px;
+    }
+
+    .box {
+      max-width: 500px;
+      margin: auto;
+      background: #222;
+      padding: 20px;
+      border-radius: 15px;
+    }
+
+    button, input {
+      width: 100%;
+      padding: 14px;
+      margin: 8px 0;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    video {
+      width: 100%;
+      margin-top: 15px;
+      border-radius: 12px;
+      background: black;
+    }
+
+    #code {
+      font-size: 30px;
+      font-weight: bold;
+      margin: 15px;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="box">
+
+  <h1>📷 Camera Share</h1>
+
+  <p>
+    Camera sharing starts only after the camera owner
+    gives browser permission.
+  </p>
+
+  <hr>
+
+  <h2>Camera Owner</h2>
+
+  <button id="create">
+    Create Sharing Code
+  </button>
+
+  <div id="code">------</div>
+
+  <button id="start" disabled>
+    Start Camera & Share
+  </button>
+
+  <video id="localVideo" autoplay playsinline muted></video>
+
+  <hr>
+
+  <h2>Viewer</h2>
+
+  <input
+    id="joinCode"
+    maxlength="6"
+    placeholder="Enter 6 digit code"
+  >
+
+  <button id="join">
+    Join Camera
+  </button>
+
+  <video id="remoteVideo" autoplay playsinline></video>
+
+  <p id="status"></p>
+
+</div>
+
+<script>
+
+const ws = new WebSocket(
+  location.protocol === "https:"
+    ? "wss://" + location.host
+    : "ws://" + location.host
+);
+
+let pc = null;
+let localStream = null;
+let roomCode = null;
+let role = null;
+
+const createBtn = document.getElementById("create");
+const startBtn = document.getElementById("start");
+const joinBtn = document.getElementById("join");
+
+const codeBox = document.getElementById("code");
+const joinCode = document.getElementById("joinCode");
+
+const localVideo = document.getElementById("localVideo");
+const remoteVideo = document.getElementById("remoteVideo");
+const status = document.getElementById("status");
+
+const rtcConfig = {
+  iceServers: [
+    {
+      urls: "stun:stun.l.google.com:19302"
+    }
+  ]
+};
+
+function send(data) {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(data));
+  }
+}
+
+function setupPeer() {
+
+  pc = new RTCPeerConnection(rtcConfig);
+
+  pc.onicecandidate = event => {
+    if (event.candidate) {
+      send({
+        type: "candidate",
+        candidate: event.candidate
+      });
+    }
+  };
+
+  pc.ontrack = event => {
+    remoteVideo.srcObject = event.streams[0];
+  };
+
+  return pc;
+}
+
+ws.onopen = () => {
+  status.textContent = "Connected";
+};
+
+ws.onmessage = async event => {
+
+  const msg = JSON.parse(event.data);
+
+  if (msg.type === "created") {
+
+    roomCode = msg.code;
+
+    codeBox.textContent = msg.code;
+
+    startBtn.disabled = false;
+
+    status.textContent =
+      "Code created. Start camera to share.";
+  }
+
+  if (msg.type === "viewer-joined") {
+
+    status.textContent =
+      "Viewer connected.";
+
+    setupPeer();
+
+    localStream
+      .getTracks()
+      .forEach(track => {
+        pc.addTrack(track, localStream);
+      });
+
+    const offer = await pc.createOffer();
+
+    await pc.setLocalDescription(offer);
+
+    send({
+      type: "offer",
+      offer
+    });
+  }
+
+  if (msg.type === "offer") {
+
+    role = "viewer";
+
+    setupPeer();
+
+    await pc.setRemoteDescription(msg.offer);
+
+    const answer = await pc.createAnswer();
+
+    await pc.setLocalDescription(answer);
+
+    send({
+      type: "answer",
+      answer
+    });
+  }
+
+  if (msg.type === "answer") {
+
+    await pc.setRemoteDescription(msg.answer);
+  }
+
+  if (msg.type === "candidate") {
+
+    try {
+      await pc.addIceCandidate(msg.candidate);
+    } catch (e) {
+      console.log(e);
+    }
+  }
+
+  if (msg.type === "peer-left") {
+
+    status.textContent =
+      "Other device disconnected.";
+
+    if (pc) {
+      pc.close();
+      pc = null;
+    }
+  }
+
+  if (msg.type === "error") {
+
+    status.textContent = msg.message;
+  }
+};
+
+createBtn.onclick = () => {
+
+  role = "sharer";
+
+  send({
+    type: "create"
+  });
+};
+
+startBtn.onclick = async () => {
+
+  try {
+
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: false
+    });
+
+    localVideo.srcObject = localStream;
+
+    status.textContent =
+      "Camera is sharing after your permission.";
+  }
+
+  catch (error) {
+
+    status.textContent =
+      "Camera permission was denied.";
+  }
+};
+
+joinBtn.onclick = () => {
+
+  const code = joinCode.value.trim();
+
+  if (!/^\d{6}$/.test(code)) {
+
+    status.textContent =
+      "Please enter a valid 6 digit code.";
+
+    return;
+  }
+
+  role = "viewer";
+
+  send({
+    type: "join",
+    code
+  });
+
+  status.textContent =
+    "Joining camera...";
+};
+
+</script>
+
+</body>
+</html>
