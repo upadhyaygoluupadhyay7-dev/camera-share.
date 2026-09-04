@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: permission-camera-share
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
